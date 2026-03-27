@@ -1,18 +1,66 @@
 export default {
-	async fetch(request, env) {
-		const inputs = {
-			prompt: "cyberpunk cat",
-		};
+  async fetch(request, env) {
+    // 1. Authenticate
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== `Bearer ${env.API_KEY}`) {
+      return new Response("Unauthorized", { status: 401 });
+    }
 
-		const response = await env.AI.run(
-			"@cf/stabilityai/stable-diffusion-xl-base-1.0",
-			inputs,
-		);
+    if (request.method !== "POST") {
+      return new Response("Use POST", { status: 405 });
+    }
 
-		return new Response(response, {
-			headers: {
-				"content-type": "image/png",
-			},
-		});
-	},
-} satisfies ExportedHandler<Env>;
+    try {
+      const { prompt, model } = await request.json();
+      if (!prompt) return new Response("Missing prompt", { status: 400 });
+
+      const targetModel = model || "@cf/black-forest-labs/flux-1-schnell";
+
+      // 2. High-quality Translation & Enhancement
+      const translation = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+        messages: [
+          { 
+            role: "system", 
+            content: "You are a professional image prompt engineer. Translate Chinese to a detailed English image prompt. Return ONLY the translation." 
+          },
+          { role: "user", content: prompt }
+        ]
+      });
+      const englishPrompt = translation.response;
+
+      // 3. Handle Model-Specific Input Formats
+      let aiResponse;
+      
+      // Check if the model is from the Flux.2 family (requires multipart/form-data)
+      if (targetModel.includes("flux-2")) {
+        const formData = new FormData();
+        formData.append("prompt", englishPrompt);
+        aiResponse = await env.AI.run(targetModel, formData);
+      } else {
+        // Standard models (Flux.1, Stable Diffusion) use JSON
+        aiResponse = await env.AI.run(targetModel, { prompt: englishPrompt });
+      }
+
+      // 4. Handle Output Formats
+      // Case A: Binary Stream (Older models)
+      if (aiResponse instanceof ReadableStream || aiResponse instanceof Uint8Array) {
+        return new Response(aiResponse, { headers: { "content-type": "image/png" } });
+      }
+
+      // Case B: Base64 JSON (Flux family)
+      if (aiResponse && aiResponse.image) {
+        const binaryString = atob(aiResponse.image);
+        const img = Uint8Array.from(binaryString, (m) => m.charCodeAt(0));
+        return new Response(img, { headers: { "content-type": "image/png" } });
+      }
+
+      // Fallback: If it's some other JSON format, return as JSON
+      return new Response(JSON.stringify(aiResponse), { 
+        headers: { "content-type": "application/json" } 
+      });
+
+    } catch (e) {
+      return new Response(e.message, { status: 500 });
+    }
+  },
+};
