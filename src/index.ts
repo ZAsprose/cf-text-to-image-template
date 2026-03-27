@@ -35,6 +35,10 @@ export default {
       if (targetModel.includes("flux-2")) {
         const formData = new FormData();
         formData.append("prompt", englishPrompt);
+
+        // Optional: Flux.2 Klein supports aspect_ratio (e.g., "1:1", "16:9")
+        formData.append("aspect_ratio", "16:9"); 
+        
         aiResponse = await env.AI.run(targetModel, formData);
       } else {
         // Standard models (Flux.1, Stable Diffusion) use JSON
@@ -42,25 +46,18 @@ export default {
       }
 
       // 4. Handle Output Formats
-      // Case A: Binary Stream (Older models)
-      if (aiResponse instanceof ReadableStream || aiResponse instanceof Uint8Array) {
-        return new Response(aiResponse, { headers: { "content-type": "image/png" } });
-      }
-
-      // Case B: Base64 JSON (Flux family)
-      if (aiResponse && aiResponse.image) {
+      // 3. Handle the Response (Flux.2 returns a JSON with an 'image' key)
+      if (aiResponse.image) {
         const binaryString = atob(aiResponse.image);
         const img = Uint8Array.from(binaryString, (m) => m.charCodeAt(0));
         return new Response(img, { headers: { "content-type": "image/png" } });
       }
 
-      // Fallback: If it's some other JSON format, return as JSON
-      return new Response(JSON.stringify(aiResponse), { 
-        headers: { "content-type": "application/json" } 
-      });
+      // Fallback for streaming binary models
+      return new Response(aiResponse, { headers: { "content-type": "image/png" } });
 
     } catch (e) {
       return new Response(e.message, { status: 500 });
     }
-  },
+  }
 };
