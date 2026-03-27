@@ -24,8 +24,8 @@ export default {
       if (targetModel.includes("flux-2")) {
         const formData = new FormData();
         formData.append('prompt', englishPrompt);
-        formData.append('width', '1024');
-        formData.append('height', '1024');
+        formData.append('width', '1080');
+        formData.append('height', '1440');
         const formResponse = new Response(formData);
         const formStream = formResponse.body;
         const formContentType = formResponse.headers.get('content-type');
