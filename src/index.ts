@@ -1,63 +1,66 @@
 export default {
   async fetch(request, env) {
-    // 1. Authenticate
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== `Bearer ${env.API_KEY}`) {
       return new Response("Unauthorized", { status: 401 });
     }
-
-    if (request.method !== "POST") {
-      return new Response("Use POST", { status: 405 });
-    }
+    if (request.method !== "POST") return new Response("Use POST", { status: 405 });
 
     try {
       const { prompt, model } = await request.json();
-      if (!prompt) return new Response("Missing prompt", { status: 400 });
-
       const targetModel = model || "@cf/black-forest-labs/flux-1-schnell";
 
-      // 2. High-quality Translation & Enhancement
+      // 1. Translation (Meta Llama 3.1)
       const translation = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
         messages: [
-          { 
-            role: "system", 
-            content: "You are a professional image prompt engineer. Translate Chinese to a detailed English image prompt. Return ONLY the translation." 
-          },
+          { role: "system", content: "Translate to a detailed English image prompt. Return ONLY the translation." },
           { role: "user", content: prompt }
         ]
       });
       const englishPrompt = translation.response;
 
-      // 3. Handle Model-Specific Input Formats
+      // 2. AI Inference
       let aiResponse;
-      
-      // Check if the model is from the Flux.2 family (requires multipart/form-data)
       if (targetModel.includes("flux-2")) {
         const formData = new FormData();
-        formData.append("prompt", englishPrompt);
-
-        // Optional: Flux.2 Klein supports aspect_ratio (e.g., "1:1", "16:9")
-        formData.append("aspect_ratio", "16:9"); 
-        
-        aiResponse = await env.AI.run(targetModel, formData);
+        formData.append('prompt', englishPrompt);
+        formData.append('width', '1024');
+        formData.append('height', '1024');
+        const formResponse = new Response(formData);
+        const formStream = formResponse.body;
+        const formContentType = formResponse.headers.get('content-type');
+        aiResponse = await env.AI.run(targetModel, { multipart: {
+        body: formStream,
+        contentType: formContentType
+      }});
       } else {
-        // Standard models (Flux.1, Stable Diffusion) use JSON
         aiResponse = await env.AI.run(targetModel, { prompt: englishPrompt });
       }
 
-      // 4. Handle Output Formats
-      // 3. Handle the Response (Flux.2 returns a JSON with an 'image' key)
-      if (aiResponse.image) {
+      // 3. Handle different response types to prevent the ReadableStream error
+      
+      // Check if it's a JSON object (Flux models often return { image: "base64..." })
+      if (aiResponse && typeof aiResponse === 'object' && aiResponse.image) {
         const binaryString = atob(aiResponse.image);
         const img = Uint8Array.from(binaryString, (m) => m.charCodeAt(0));
-        return new Response(img, { headers: { "content-type": "image/png" } });
+        return new Response(img, { headers: { "Content-Type": "image/png" } });
       }
 
-      // Fallback for streaming binary models
-      return new Response(aiResponse, { headers: { "content-type": "image/png" } });
+      // THE ULTIMATE FIX: 
+      // If it's a stream, we "consume" it into an ArrayBuffer.
+      // This converts the 'ReadableStream' into fixed binary data.
+      const blob = await new Response(aiResponse).arrayBuffer();
+      
+      return new Response(blob, {
+        headers: { 
+          "Content-Type": "image/png",
+          "x-model-used": targetModel
+        }
+      });
 
     } catch (e) {
-      return new Response(e.message, { status: 500 });
+      // If it's a 5006 error, the model might not support the format we chose
+      return new Response(`Worker Error: ${e.message}`, { status: 500 });
     }
   }
 };
